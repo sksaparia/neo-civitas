@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>NEO CIVITAS — Milestone 1a</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html,body { width:100%; height:100%; overflow:hidden; background:#0b0f14; font-family:'Segoe UI',system-ui,sans-serif; }
+  #app { width:100%; height:100%; position:relative; }
+  canvas { display:block; }
+  #topbar {
+    position:absolute; top:0; left:0; right:0; height:44px;
+    background:rgba(10,14,20,0.85); backdrop-filter:blur(8px);
+    display:flex; align-items:center; gap:22px; padding:0 16px;
+    color:#dfe7ef; font-size:13px; border-bottom:1px solid rgba(255,255,255,0.08);
+    user-select:none;
+  }
+  #topbar .brand { font-weight:700; letter-spacing:2px; color:#5ec8ff; font-size:13px; }
+  #topbar .stat b { color:#fff; font-weight:600; }
+  #hint {
+    position:absolute; bottom:12px; left:50%; transform:translateX(-50%);
+    background:rgba(10,14,20,0.8); color:#aebbc9; padding:8px 16px;
+    border-radius:8px; font-size:12px; border:1px solid rgba(255,255,255,0.08);
+    user-select:none; text-align:center;
+  }
+  #cellinfo {
+    position:absolute; top:56px; left:12px; background:rgba(10,14,20,0.8);
+    color:#cfe3f5; padding:8px 12px; border-radius:8px; font-size:12px;
+    border:1px solid rgba(255,255,255,0.08); min-width:150px; user-select:none;
+  }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="topbar">
+    <span class="brand">NEO CIVITAS</span>
+    <span class="stat">💰 <b>₹ 50,000</b></span>
+    <span class="stat">👥 <b>0</b></span>
+    <span class="stat">📅 <b id="dateLabel">Jan 2035</b></span>
+    <span class="stat" style="margin-left:auto; color:#7fd18a;">Milestone 1a — Terrain & Camera</span>
+  </div>
+  <div id="cellinfo">Cell: —<br>Terrain: —</div>
+  <div id="hint">WASD / drag: pan &nbsp;•&nbsp; wheel: zoom &nbsp;•&nbsp; Q/E: rotate &nbsp;•&nbsp; R/F: tilt</div>
+</div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+/* ============================================================
+   NEO CIVITAS — GameShell (rendering) + SimCore (state), M1a
+   SimCore is pure data/logic; GameShell reads it. (D-004 ready)
+   ============================================================ */
+
+// ---------- SimCore ----------
+const SimCore = {
+  seed: 2035,
+  size: 128,               // 128x128 cells
+  terrain: null,           // Uint8: 0 grass, 1 water, 2 sand
+  init() {
+    const s = this.size, t = new Uint8Array(s*s);
+    // simple deterministic river: sine curve across map
+    for (let z=0; z<s; z++) {
+      const riverX = Math.floor(s*0.55 + Math.sin(z*0.07 + this.seed)*10 + Math.sin(z*0.023)*6);
+      for (let x=0; x<s; x++) {
+        const d = Math.abs(x - riverX);
+        t[z*s+x] = d < 3 ? 1 : (d < 5 ? 2 : 0);
+      }
+    }
+    this.terrain = t;
+  },
+  terrainAt(x,z) {
+    if (x<0||z<0||x>=this.size||z>=this.size) return -1;
+    return this.terrain[z*this.size+x];
+  }
+};
+SimCore.init();
+
+// ---------- GameShell ----------
+const app = document.getElementById('app');
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0b1420);
+scene.fog = new THREE.Fog(0x0b1420, 180, 420);
+
+const camera = new THREE.PerspectiveCamera(55, innerWidth/innerHeight, 0.5, 1000);
+const renderer = new THREE.WebGLRenderer({ antialias:true });
+renderer.setSize(innerWidth, innerHeight);
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+app.appendChild(renderer.domElement);
+
+// Lighting — warm sun + cool sky fill
+const sun = new THREE.DirectionalLight(0xfff2dc, 1.05);
+sun.position.set(80, 120, 40);
+sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+sun.shadow.camera.left=-120; sun.shadow.camera.right=120;
+sun.shadow.camera.top=120; sun.shadow.camera.bottom=-120;
+scene.add(sun);
+scene.add(new THREE.HemisphereLight(0x9db8d8, 0x3a4a35, 0.55));
+
+// Terrain mesh — one plane, vertex-colored per cell
+const S = SimCore.size, HALF = S/2;
+(function buildTerrain(){
+  const geo = new THREE.PlaneGeometry(S, S, S, S);
+  geo.rotateX(-Math.PI/2);
+  const colors = [];
+  const pos = geo.attributes.position;
+  const grass = new THREE.Color(0x4f8a4e), grass2 = new THREE.Color(0x578f52);
+  const water = new THREE.Color(0x2b6f9e), sand = new THREE.Color(0xb9a86b);
+  for (let i=0; i<pos.count; i++) {
+    const x = Math.min(S-1, Math.max(0, Math.floor(pos.getX(i)+HALF)));
+    const z = Math.min(S-1, Math.max(0, Math.floor(pos.getZ(i)+HALF)));
+    const t = SimCore.terrainAt(x,z);
+    let c = (x+z)%2===0 ? grass : grass2;
+    if (t===1) { c = water; pos.setY(i, -0.35); }
+    else if (t===2) { c = sand; pos.setY(i, -0.08); }
+    colors.push(c.r, c.g, c.b);
+  }
+  geo.setAttribute('color', new THREE.Float32BufferAttribute(colors,3));
+  geo.computeVertexNormals();
+  const mat = new THREE.MeshLambertMaterial({ vertexColors:true });
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.receiveShadow = true;
+  scene.add(mesh);
+})();
+
+// Grid lines (subtle)
+const grid = new THREE.GridHelper(S, S, 0x223344, 0x1a2a3a);
+grid.position.y = 0.02;
+grid.material.opacity = 0.25; grid.material.transparent = true;
+scene.add(grid);
+
+// Hover highlight cell
+const hl = new THREE.Mesh(
+  new THREE.PlaneGeometry(1,1),
+  new THREE.MeshBasicMaterial({ color:0x5ec8ff, transparent:true, opacity:0.35 })
+);
+hl.rotation.x = -Math.PI/2; hl.position.y = 0.04; hl.visible = false;
+scene.add(hl);
+
+// A few placeholder trees so the world feels alive
+(function trees(){
+  const trunkG = new THREE.CylinderGeometry(0.08,0.1,0.5,5);
+  const leafG = new THREE.ConeGeometry(0.45,1.1,6);
+  const trunkM = new THREE.MeshLambertMaterial({color:0x6b4a2f});
+  const leafM = new THREE.MeshLambertMaterial({color:0x2f6b3a});
+  let rng = 12345;
+  const rand = () => (rng = (rng*16807)%2147483647)/2147483647;
+  for (let i=0;i<350;i++){
+    const x = Math.floor(rand()*S), z = Math.floor(rand()*S);
+    if (SimCore.terrainAt(x,z)!==0 || rand()<0.5) continue;
+    const g = new THREE.Group();
+    const tr = new THREE.Mesh(trunkG, trunkM); tr.position.y=0.25;
+    const lf = new THREE.Mesh(leafG, leafM); lf.position.y=1.0; lf.castShadow=true;
+    g.add(tr,lf);
+    g.position.set(x-HALF+0.5, 0, z-HALF+0.5);
+    const sc = 0.7+rand()*0.7; g.scale.set(sc,sc,sc);
+    scene.add(g);
+  }
+})();
+
+// ---------- Camera rig: target + orbit ----------
+const cam = { target:new THREE.Vector3(0,0,0), dist:60, yaw:Math.PI*0.25, pitch:0.9 };
+function updateCamera(){
+  cam.pitch = Math.max(0.25, Math.min(1.45, cam.pitch));
+  cam.dist = Math.max(8, Math.min(160, cam.dist));
+  const LIM = HALF-2;
+  cam.target.x = Math.max(-LIM, Math.min(LIM, cam.target.x));
+  cam.target.z = Math.max(-LIM, Math.min(LIM, cam.target.z));
+  const y = Math.sin(cam.pitch)*cam.dist;
+  const r = Math.cos(cam.pitch)*cam.dist;
+  camera.position.set(
+    cam.target.x + Math.sin(cam.yaw)*r,
+    y,
+    cam.target.z + Math.cos(cam.yaw)*r
+  );
+  camera.lookAt(cam.target);
+}
+
+// Input
+const keys = {};
+addEventListener('keydown', e=>keys[e.key.toLowerCase()]=true);
+addEventListener('keyup', e=>keys[e.key.toLowerCase()]=false);
+addEventListener('wheel', e=>{ cam.dist *= (e.deltaY>0?1.1:0.9); }, {passive:true});
+
+let dragging=false, lastX=0, lastY=0;
+const raycaster = new THREE.Raycaster();
+const mouse = new THREE.Vector2(-2,-2);
+renderer.domElement.addEventListener('pointerdown', e=>{dragging=true; lastX=e.clientX; lastY=e.clientY;});
+addEventListener('pointerup', ()=>dragging=false);
+addEventListener('pointermove', e=>{
+  mouse.x = (e.clientX/innerWidth)*2-1;
+  mouse.y = -(e.clientY/innerHeight)*2+1;
+  if (!dragging) return;
+  const dx=e.clientX-lastX, dy=e.clientY-lastY; lastX=e.clientX; lastY=e.clientY;
+  const sp = cam.dist*0.0022;
+  cam.target.x -= (Math.cos(cam.yaw)*dx + Math.sin(cam.yaw)*-dy)*sp;
+  cam.target.z -= (-Math.sin(cam.yaw)*dx + Math.cos(cam.yaw)*-dy)*sp;
+});
+
+// Hover raycast -> cell info
+const groundPlane = new THREE.Plane(new THREE.Vector3(0,1,0), 0);
+const cellInfo = document.getElementById('cellinfo');
+const tName = {0:'Grass 🌿',1:'Water 🌊',2:'Riverbank 🏖️','-1':'—'};
+
+// Simple game clock (visual only for M1a)
+let simDay = 0; const months=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+setInterval(()=>{
+  simDay++;
+  const m = Math.floor(simDay/30)%12, y = 2035+Math.floor(simDay/360);
+  document.getElementById('dateLabel').textContent = months[m]+' '+y;
+}, 1000);
+
+// Main loop
+const clock = new THREE.Clock();
+function animate(){
+  requestAnimationFrame(animate);
+  const dt = clock.getDelta();
+  const sp = cam.dist*0.6*dt;
+  if (keys['w']) { cam.target.x -= Math.sin(cam.yaw)*sp; cam.target.z -= Math.cos(cam.yaw)*sp; }
+  if (keys['s']) { cam.target.x += Math.sin(cam.yaw)*sp; cam.target.z += Math.cos(cam.yaw)*sp; }
+  if (keys['a']) { cam.target.x -= Math.cos(cam.yaw)*sp; cam.target.z += Math.sin(cam.yaw)*sp; }
+  if (keys['d']) { cam.target.x += Math.cos(cam.yaw)*sp; cam.target.z -= Math.sin(cam.yaw)*sp; }
+  if (keys['q']) cam.yaw += 1.4*dt;
+  if (keys['e']) cam.yaw -= 1.4*dt;
+  if (keys['r']) cam.pitch += 1.0*dt;
+  if (keys['f']) cam.pitch -= 1.0*dt;
+  updateCamera();
+
+  // hover cell
+  raycaster.setFromCamera(mouse, camera);
+  const hit = new THREE.Vector3();
+  if (raycaster.ray.intersectPlane(groundPlane, hit)) {
+    const cx = Math.floor(hit.x+HALF), cz = Math.floor(hit.z+HALF);
+    const t = SimCore.terrainAt(cx,cz);
+    if (t>=0) {
+      hl.visible = true;
+      hl.position.set(cx-HALF+0.5, 0.04, cz-HALF+0.5);
+      cellInfo.innerHTML = 'Cell: '+cx+', '+cz+'<br>Terrain: '+tName[t];
+    } else { hl.visible=false; cellInfo.innerHTML='Cell: —<br>Terrain: —'; }
+  }
+  renderer.render(scene, camera);
+}
+addEventListener('resize', ()=>{
+  camera.aspect = innerWidth/innerHeight; camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+updateCamera();
+animate();
+</script>
+</body>
+</html>
